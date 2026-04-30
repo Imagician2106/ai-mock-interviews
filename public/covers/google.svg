@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Google">
+  <defs>
+    <linearGradient id="g-blue-red" x1="18" y1="22" x2="112" y2="106" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#4285f4"/>
+      <stop offset="0.3" stop-color="#4285f4"/>
+      <stop offset="0.5" stop-color="#ea4335"/>
+      <stop offset="0.68" stop-color="#fbbc04"/>
+      <stop offset="0.85" stop-color="#34a853"/>
+      <stop offset="1" stop-color="#4285f4"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="32" fill="#fff"/>
+  <path
+    fill="none"
+    stroke="url(#g-blue-red)"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    stroke-width="18"
+    d="M103 65.5H67.5M105 66c0 24-16.5 42-40.5 42C39.9 108 20 88.1 20 63.5S39.9 19 64.5 19c12.1 0 22.4 4.4 30.4 11.7"
+  />
+</svg>
