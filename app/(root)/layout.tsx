@@ -1,10 +1,11 @@
 "use client";
 
 import { ReactNode, useEffect, useState } from "react";
-import { getAuth, onAuthStateChanged } from "firebase/auth";
+import { onAuthStateChanged } from "firebase/auth";
 import { useRouter } from "next/navigation";
 
 import AppHeader from "@/components/AppHeader";
+import { auth } from "@/firebase/client"; // ✅ IMPORTANT
 
 const Layout = ({ children }: { children: ReactNode }) => {
   const [user, setUser] = useState<any>(null);
@@ -12,8 +13,6 @@ const Layout = ({ children }: { children: ReactNode }) => {
   const router = useRouter();
 
   useEffect(() => {
-    const auth = getAuth();
-
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       if (user) {
         setUser(user);
