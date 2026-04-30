@@ -1,7 +1,7 @@
 import { generateText } from "ai";
 import { google } from "@ai-sdk/google";
 
-import { db } from "@/firebase/admin";
+import { getAdminDb } from "@/firebase/admin";
 import { getRandomInterviewCover } from "@/lib/utils";
 
 function extractJsonArray(text: string): string[] {
@@ -174,6 +174,7 @@ export async function POST(request: Request) {
       framework: frameworks || [],
     };
 
+    const db = getAdminDb();
     await db.collection("interviews").add(interview);
 
     return Response.json({ success: true }, { status: 200 });

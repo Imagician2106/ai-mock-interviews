@@ -1,9 +1,7 @@
-// Import the functions you need
 import { getApp, getApps, initializeApp } from "firebase/app";
-import { getAuth, setPersistence, browserLocalPersistence } from "firebase/auth";
+import { browserLocalPersistence, getAuth, setPersistence } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
 
-// Firebase config
 const firebaseConfig = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
   authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
@@ -13,14 +11,14 @@ const firebaseConfig = {
   appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
 };
 
-// Initialize Firebase FIRST
 const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
 
-// ✅ Create auth ONCE
 export const auth = getAuth(app);
 
-// ✅ Set persistence AFTER auth is created
-setPersistence(auth, browserLocalPersistence);
+if (typeof window !== "undefined") {
+  void setPersistence(auth, browserLocalPersistence).catch((error) => {
+    console.error("Failed to set Firebase auth persistence:", error);
+  });
+}
 
-// Firestore
 export const db = getFirestore(app);

@@ -1,37 +1,18 @@
-"use client";
-
-import { ReactNode, useEffect, useState } from "react";
-import { onAuthStateChanged } from "firebase/auth";
-import { useRouter } from "next/navigation";
+import { ReactNode } from "react";
+import { redirect } from "next/navigation";
 
 import AppHeader from "@/components/AppHeader";
-import { auth } from "@/firebase/client"; // ✅ IMPORTANT
+import { getCurrentUser } from "@/lib/actions/auth.action";
 
-const Layout = ({ children }: { children: ReactNode }) => {
-  const [user, setUser] = useState<any>(null);
-  const [loading, setLoading] = useState(true);
-  const router = useRouter();
-
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
-      if (user) {
-        setUser(user);
-      } else {
-        router.push("/sign-in");
-      }
-      setLoading(false);
-    });
-
-    return () => unsubscribe();
-  }, [router]);
-
-  if (loading) return <div>Loading...</div>;
+const Layout = async ({ children }: { children: ReactNode }) => {
+  const user = await getCurrentUser();
+  if (!user) redirect("/sign-in");
 
   return (
     <div className="app-frame">
       <div className="ambient-grid" />
       <div className="root-layout">
-        <AppHeader userName={user?.displayName || "User"} />
+        <AppHeader userName={user.name} />
         {children}
       </div>
     </div>

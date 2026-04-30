@@ -1,6 +1,6 @@
 "use server";
 
-import { auth, db } from "@/firebase/admin";
+import { getAdminAuth, getAdminDb } from "@/firebase/admin";
 import { cookies } from "next/headers";
 
 // Session duration (1 week)
@@ -9,6 +9,7 @@ const SESSION_DURATION = 60 * 60 * 24 * 7;
 // Set session cookie
 export async function setSessionCookie(idToken: string) {
   const cookieStore = await cookies();
+  const auth = getAdminAuth();
 
   // Create session cookie
   const sessionCookie = await auth.createSessionCookie(idToken, {
@@ -29,6 +30,8 @@ export async function signUp(params: SignUpParams) {
   const { uid, name, email } = params;
 
   try {
+    const db = getAdminDb();
+
     // check if user exists in db
     const userRecord = await db.collection("users").doc(uid).get();
     if (userRecord.exists)
@@ -75,6 +78,8 @@ export async function signIn(params: SignInParams) {
   const { email, idToken } = params;
 
   try {
+    const auth = getAdminAuth();
+
     const userRecord = await auth.getUserByEmail(email);
     if (!userRecord)
       return {
@@ -83,6 +88,11 @@ export async function signIn(params: SignInParams) {
       };
 
     await setSessionCookie(idToken);
+
+    return {
+      success: true,
+      message: "Signed in successfully.",
+    };
   } catch (error: unknown) {
     console.error("Error signing in:", error);
 
@@ -108,6 +118,9 @@ export async function getCurrentUser(): Promise<User | null> {
   if (!sessionCookie) return null;
 
   try {
+    const auth = getAdminAuth();
+    const db = getAdminDb();
+
     const decodedClaims = await auth.verifySessionCookie(sessionCookie, true);
 
     // get user info from db
