@@ -12,6 +12,30 @@ import {
 import { Button } from "@/components/ui/button";
 import { getCurrentUser } from "@/lib/actions/auth.action";
 
+function recalibrateLegacyFallbackFeedback(feedback: Feedback | null) {
+  if (!feedback) return null;
+
+  const isLegacyFallback =
+    feedback.finalAssessment?.startsWith("Feedback was generated from the saved transcript") ||
+    feedback.categoryScores?.some((category) =>
+      category.comment.includes("Technical depth was estimated from the saved transcript")
+    );
+
+  if (!isLegacyFallback) return feedback;
+
+  return {
+    ...feedback,
+    totalScore: Math.min(feedback.totalScore, 42),
+    categoryScores: feedback.categoryScores.map((category) => ({
+      ...category,
+      score: Math.min(category.score, 42),
+      comment: `${category.comment} This legacy fallback score has been recalibrated conservatively because detailed AI scoring was unavailable.`,
+    })),
+    finalAssessment:
+      "This earlier fallback report has been recalibrated conservatively because the original AI scoring service was unavailable and the saved fallback overestimated the interview. Retake the interview for the stricter transcript-based evaluation.",
+  };
+}
+
 const Feedback = async ({ params }: RouteParams) => {
   const { id } = await params;
   const user = await getCurrentUser();
@@ -20,10 +44,11 @@ const Feedback = async ({ params }: RouteParams) => {
   const interview = await getInterviewById(id);
   if (!interview) redirect("/");
 
-  const feedback = await getFeedbackByInterviewId({
+  const storedFeedback = await getFeedbackByInterviewId({
     interviewId: id,
     userId: user.id,
   });
+  const feedback = recalibrateLegacyFallbackFeedback(storedFeedback);
   const score = feedback?.totalScore ?? 0;
 
   return (

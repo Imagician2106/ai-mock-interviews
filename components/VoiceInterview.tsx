@@ -7,6 +7,8 @@ import { toast } from "sonner";
 import { Keyboard, Mic, PauseCircle, Play, RotateCcw } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { vapi } from "@/lib/vapi.sdk";
+import { interviewer } from "@/constants";
 import { createFeedback } from "@/lib/actions/general.action";
 
 interface SavedMessage {
@@ -66,7 +68,6 @@ async function requestMicrophoneAccess() {
     stream.getTracks().forEach((track) => track.stop());
     return { granted: true, message: "" };
   } catch (error) {
-    console.error("Microphone permission error:", error);
     const name = error instanceof DOMException ? error.name : "";
     const message =
       name === "NotAllowedError"
@@ -100,12 +101,16 @@ const VoiceInterview = ({
   const [isStarted, setIsStarted] = useState(false);
   const [liveTranscript, setLiveTranscript] = useState("");
   const [isTextFallback, setIsTextFallback] = useState(false);
+  const [answerMode, setAnswerMode] = useState<"voice" | "type">("voice");
   const [micMessage, setMicMessage] = useState("");
   const [typedAnswer, setTypedAnswer] = useState("");
+  const [isVoiceTyping, setIsVoiceTyping] = useState(false);
+  const [isVapiActive, setIsVapiActive] = useState(false);
 
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const synthRef = useRef<SpeechSynthesisUtterance | null>(null);
   const messagesRef = useRef<SavedMessage[]>([]);
+  const transcriptLogRef = useRef<HTMLDivElement | null>(null);
   const questionIndexRef = useRef(0);
   const isProcessingRef = useRef(false);
   const shouldListenRef = useRef(false);
@@ -119,6 +124,13 @@ const VoiceInterview = ({
   useEffect(() => {
     questionIndexRef.current = currentQuestionIndex;
   }, [currentQuestionIndex]);
+
+  useEffect(() => {
+    const transcriptLog = transcriptLogRef.current;
+    if (!transcriptLog) return;
+
+    transcriptLog.scrollTop = transcriptLog.scrollHeight;
+  }, [messages, liveTranscript]);
 
   const speak = useCallback((text: string): Promise<void> => {
     return new Promise((resolve) => {
@@ -176,7 +188,11 @@ const VoiceInterview = ({
       speechWindow.SpeechRecognition || speechWindow.webkitSpeechRecognition;
 
     if (!SpeechRecognition) {
-      toast.error("Speech recognition is not supported in your browser. Please use Chrome or Edge.");
+      shouldListenRef.current = false;
+      isTextFallbackRef.current = true;
+      setIsTextFallback(true);
+      setAnswerMode("type");
+      setMicMessage("Voice input is not available in this browser. Typing is ready.");
       return;
     }
 
@@ -198,13 +214,15 @@ const VoiceInterview = ({
       for (let i = 0; i < event.results.length; i++) {
         const transcript = event.results[i][0].transcript;
         if (event.results[i].isFinal) {
-          finalTranscript += transcript + " ";
+          finalTranscript += `${transcript.trim()} `;
         } else {
           interim += transcript;
         }
       }
 
-      setLiveTranscript(finalTranscript + interim);
+      const dictatedText = `${finalTranscript}${interim}`.trim();
+      setLiveTranscript(dictatedText);
+      setTypedAnswer(dictatedText);
 
       if (silenceTimer) clearTimeout(silenceTimer);
       silenceTimer = setTimeout(() => {
@@ -218,6 +236,7 @@ const VoiceInterview = ({
       if (silenceTimer) clearTimeout(silenceTimer);
       const userText = finalTranscript.trim();
       setLiveTranscript("");
+      setIsVoiceTyping(false);
 
       if (userText.length > 0 && !isProcessingRef.current) {
         isProcessingRef.current = true;
@@ -228,24 +247,38 @@ const VoiceInterview = ({
     };
 
     recognition.onerror = (event) => {
-      console.error("Speech recognition error:", event.error);
-      if (event.error === "not-allowed") {
-        toast.error("Microphone access is blocked. Switching to typed answers.");
-        shouldListenRef.current = false;
-        isTextFallbackRef.current = true;
-        setIsTextFallback(true);
-        setStatus("listening");
-      } else if (shouldListenRef.current) {
-        window.setTimeout(startListening, 500);
-      }
+      const fallbackMessages: Record<string, string> = {
+        "not-allowed":
+          "Microphone access is blocked. Allow it in browser or system settings, then try voice again.",
+        network: "",
+        "service-not-allowed":
+          "Voice input is blocked by this browser right now. Typing is ready.",
+      };
+
+      const message =
+        fallbackMessages[event.error] ||
+        "";
+
+      shouldListenRef.current = false;
+      isTextFallbackRef.current = true;
+      setIsTextFallback(true);
+      setAnswerMode("type");
+      setMicMessage(message);
+      setStatus("listening");
     };
 
     recognitionRef.current = recognition;
     try {
       recognition.start();
+      setIsVoiceTyping(true);
       setStatus("listening");
     } catch (error) {
-      console.error("Could not start speech recognition:", error);
+      shouldListenRef.current = false;
+      isTextFallbackRef.current = true;
+      setIsTextFallback(true);
+      setAnswerMode("type");
+      setMicMessage("Voice input could not start. Typing is ready.");
+      setIsVoiceTyping(false);
     }
   }, []);
 
@@ -277,11 +310,126 @@ const VoiceInterview = ({
     }
   }, [feedbackId, interviewId, router, userId]);
 
+  useEffect(() => {
+    const onCallStart = () => {
+      setIsVapiActive(true);
+      setIsStarted(true);
+      setAnswerMode("voice");
+      setMicMessage("");
+      setCurrentQuestionIndex(1);
+      questionIndexRef.current = 1;
+      setStatus("listening");
+    };
+
+    const onCallEnd = () => {
+      setIsVapiActive(false);
+      setIsSpeaking(false);
+      shouldListenRef.current = false;
+      setStatus("finished");
+      handleFinish(messagesRef.current);
+    };
+
+    const onMessage = (message: Message) => {
+      if (message.type !== "transcript") return;
+
+      const transcript = message.transcript.trim();
+      if (!transcript) return;
+
+      if (message.transcriptType === "partial" && message.role === "user") {
+        setTypedAnswer(transcript);
+        setLiveTranscript(transcript);
+        setIsVoiceTyping(true);
+        return;
+      }
+
+      if (message.transcriptType === "final") {
+        const savedMessage: SavedMessage = {
+          role: message.role === "assistant" ? "assistant" : "user",
+          content: transcript,
+        };
+
+        setMessages((prev) => {
+          const nextMessages = [...prev, savedMessage];
+          messagesRef.current = nextMessages;
+          return nextMessages;
+        });
+        setLastMessage(transcript);
+
+        if (message.role === "user") {
+          setTypedAnswer(transcript);
+          setLiveTranscript("");
+          setIsVoiceTyping(false);
+        }
+      }
+    };
+
+    const onSpeechStart = () => setIsSpeaking(true);
+    const onSpeechEnd = () => setIsSpeaking(false);
+    const onError = () => {
+      setIsVapiActive(false);
+      setIsSpeaking(false);
+      setIsVoiceTyping(false);
+      shouldListenRef.current = false;
+      setMicMessage("Voice could not start. Check microphone permission, then press Start voice again.");
+      setStatus("listening");
+    };
+
+    vapi.on("call-start", onCallStart);
+    vapi.on("call-end", onCallEnd);
+    vapi.on("message", onMessage);
+    vapi.on("speech-start", onSpeechStart);
+    vapi.on("speech-end", onSpeechEnd);
+    vapi.on("error", onError);
+
+    return () => {
+      vapi.off("call-start", onCallStart);
+      vapi.off("call-end", onCallEnd);
+      vapi.off("message", onMessage);
+      vapi.off("speech-start", onSpeechStart);
+      vapi.off("speech-end", onSpeechEnd);
+      vapi.off("error", onError);
+    };
+  }, [handleFinish, questions?.length]);
+
   const speakWithoutBlocking = useCallback((text: string) => {
     void speak(text).catch((error) => {
       console.error("Speech playback error:", error);
     });
   }, [speak]);
+
+  const startVapiInterview = useCallback(async () => {
+    if (isVapiActive || status === "thinking" || status === "speaking") return;
+
+    setIsStarted(true);
+    setAnswerMode("voice");
+    setIsTextFallback(false);
+    isTextFallbackRef.current = false;
+    shouldListenRef.current = false;
+    setMicMessage("");
+    setTypedAnswer("");
+    setLiveTranscript("");
+    setIsVoiceTyping(false);
+    setStatus("speaking");
+
+    try {
+      const formattedQuestions = (questions || [])
+        .map((question, index) => `${index + 1}. ${question}`)
+        .join("\n");
+
+      await vapi.start(interviewer, {
+        variableValues: {
+          username: userName,
+          questions: formattedQuestions,
+        },
+      });
+    } catch (error) {
+      console.error("Vapi start error:", error);
+      setIsVapiActive(false);
+      setIsVoiceTyping(false);
+      setStatus("listening");
+      setMicMessage("Voice could not start. Allow microphone access and press Start voice again.");
+    }
+  }, [isVapiActive, questions, status, userName]);
 
   const handleUserResponse = useCallback(async (userText: string) => {
     const userMessage: SavedMessage = { role: "user", content: userText };
@@ -397,6 +545,11 @@ const VoiceInterview = ({
   const handleStart = async () => {
     if (isStarted) return;
 
+    if (answerMode === "voice") {
+      await startVapiInterview();
+      return;
+    }
+
     setIsStarted(true);
     setMicMessage("");
 
@@ -408,39 +561,34 @@ const VoiceInterview = ({
 
     questionIndexRef.current = 1;
     setCurrentQuestionIndex(1);
-    setStatus("speaking");
-
-    const micAccess = await requestMicrophoneAccess();
-    const speechPromise = speak(greeting);
-    shouldListenRef.current = micAccess.granted;
-    isTextFallbackRef.current = !micAccess.granted;
-    setIsTextFallback(!micAccess.granted);
-
-    if (micAccess.granted) {
-      await speechPromise;
-      startListening();
-    } else {
-      setMicMessage(micAccess.message);
-      toast.error(micAccess.message);
-      setStatus("listening");
-    }
+    setStatus("listening");
+    setIsTextFallback(true);
+    isTextFallbackRef.current = true;
+    speakWithoutBlocking(greeting);
   };
 
   const handleRetryMicrophone = async () => {
     if (!isStarted || status === "thinking" || status === "speaking") return;
 
-    setMicMessage("");
-    const micAccess = await requestMicrophoneAccess();
-    shouldListenRef.current = micAccess.granted;
-    isTextFallbackRef.current = !micAccess.granted;
-    setIsTextFallback(!micAccess.granted);
+    await startVapiInterview();
+  };
 
-    if (micAccess.granted) {
-      setStatus("listening");
-      startListening();
-    } else {
-      setMicMessage(micAccess.message);
-      toast.error(micAccess.message);
+  const switchToTypeMode = () => {
+    shouldListenRef.current = false;
+    recognitionRef.current?.stop();
+    setIsVoiceTyping(false);
+    setAnswerMode("type");
+    setIsTextFallback(true);
+    isTextFallbackRef.current = true;
+    setMicMessage("");
+    setStatus("listening");
+  };
+
+  const switchToVoiceMode = () => {
+    setAnswerMode("voice");
+    setMicMessage("");
+    if (isStarted && !isVapiActive) {
+      void startVapiInterview();
     }
   };
 
@@ -450,6 +598,12 @@ const VoiceInterview = ({
     if (recognitionRef.current) {
       recognitionRef.current.stop();
       recognitionRef.current = null;
+    }
+    if (isVapiActive) {
+      vapi.stop();
+      setIsVapiActive(false);
+      setStatus("finished");
+      return;
     }
     window.speechSynthesis?.cancel();
     setStatus("finished");
@@ -461,6 +615,7 @@ const VoiceInterview = ({
     if (!answer || isProcessingRef.current || status === "thinking" || status === "speaking") return;
 
     setTypedAnswer("");
+    setLiveTranscript("");
     isProcessingRef.current = true;
     handleUserResponseRef.current(answer);
   };
@@ -471,7 +626,7 @@ const VoiceInterview = ({
 
   const statusText = {
     idle: "Click Start to begin your interview",
-    listening: isTextFallback ? "Type your answer below" : "Listening... Speak your answer",
+    listening: answerMode === "type" ? "Type your answer below" : "Listening... Speak your answer",
     thinking: "Processing your response...",
     speaking: "Interviewer is speaking...",
     finished: "Interview complete. Generating feedback...",
@@ -523,17 +678,34 @@ const VoiceInterview = ({
       </div>
 
       {lastMessage && (
-        <div className="transcript-border">
-          <div className="transcript">
-            <p
-              key={lastMessage.slice(0, 50)}
-              className={cn(
-                "transition-opacity duration-500 opacity-0",
-                "animate-fadeIn opacity-100"
-              )}
-            >
-              {lastMessage}
-            </p>
+        <div className="conversation-panel">
+          <div className="conversation-header">
+            <span>Conversation transcript</span>
+            <small>{messages.length} {messages.length === 1 ? "line" : "lines"}</small>
+          </div>
+
+          <div className="conversation-log" ref={transcriptLogRef}>
+            {messages.map((message, index) => (
+              <div
+                key={`${message.role}-${index}-${message.content.slice(0, 24)}`}
+                className={cn(
+                  "conversation-message",
+                  message.role === "user"
+                    ? "conversation-message-user"
+                    : "conversation-message-assistant"
+                )}
+              >
+                <span>{message.role === "user" ? "You" : "Interviewer"}</span>
+                <p>{message.content}</p>
+              </div>
+            ))}
+
+            {liveTranscript && (
+              <div className="conversation-message conversation-message-user conversation-message-live">
+                <span>You</span>
+                <p>{liveTranscript}</p>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -547,7 +719,7 @@ const VoiceInterview = ({
         </div>
       )}
 
-      {isStarted && questions && (
+      {isStarted && questions && answerMode === "type" && (
         <div className="question-progress-bar">
           <div className="question-progress-track">
             <div
@@ -561,9 +733,30 @@ const VoiceInterview = ({
         </div>
       )}
 
-      {isTextFallback && isStarted && status !== "finished" && (
+      {isStarted && status !== "finished" && (
         <div className="text-answer-box">
-          {micMessage && (
+          <div className="answer-mode-tabs" role="tablist" aria-label="Answer mode">
+            <button
+              type="button"
+              className={answerMode === "voice" ? "answer-mode-active" : ""}
+              onClick={switchToVoiceMode}
+              disabled={status === "thinking" || status === "speaking"}
+            >
+              <Mic className="size-4" />
+              Voice
+            </button>
+            <button
+              type="button"
+              className={answerMode === "type" ? "answer-mode-active" : ""}
+              onClick={switchToTypeMode}
+              disabled={status === "thinking" || status === "speaking"}
+            >
+              <Keyboard className="size-4" />
+              Type
+            </button>
+          </div>
+
+          {answerMode === "type" && micMessage && (
             <div className="mic-help">
               <p>{micMessage}</p>
               <button type="button" onClick={handleRetryMicrophone}>
@@ -572,13 +765,36 @@ const VoiceInterview = ({
               </button>
             </div>
           )}
+
+          {answerMode === "voice" && liveTranscript && (
+            <div className="live-transcript input-transcript">
+              <p className="text-sm text-primary-200 italic">Voice is typing into the answer box.</p>
+            </div>
+          )}
+
+          <div className="answer-composer">
+            <div className="composer-topline">
+              <span>
+                {answerMode === "voice"
+                  ? isVoiceTyping
+                    ? "Listening and typing"
+                    : "Voice mode ready"
+                  : "Type mode"}
+              </span>
+              <small>{typedAnswer.trim().split(/\s+/).filter(Boolean).length} words</small>
+            </div>
           <textarea
             className="text-answer-input"
             value={typedAnswer}
             onChange={(event) => setTypedAnswer(event.target.value)}
-            placeholder="Type your answer..."
+            placeholder={
+              answerMode === "voice"
+                ? "Speak now. Your words will appear here, and you can edit before sending..."
+                : "Type your answer..."
+            }
             disabled={status === "thinking" || status === "speaking"}
           />
+          </div>
           <button
             type="button"
             className="btn-primary text-answer-submit"

@@ -50,11 +50,161 @@ async function generateFeedbackObject(prompt: string) {
   throw new Error("Feedback generation failed");
 }
 
+function clampScore(score: number) {
+  return Math.max(0, Math.min(100, Math.round(score)));
+}
+
+function analyzeTranscript(transcript: CreateFeedbackParams["transcript"]) {
+  const userMessages = transcript.filter((message) => message.role === "user");
+  const assistantMessages = transcript.filter((message) => message.role === "assistant");
+  const answerStats = userMessages.map((message) => {
+    const normalized = message.content.toLowerCase().trim();
+    const words = normalized.split(/\s+/).filter(Boolean);
+    const isVague =
+      words.length < 8 ||
+      /\b(i don't know|dont know|no idea|not sure|skip|pass|idk|nothing|maybe|project\.?)\b/.test(normalized);
+
+    return {
+      wordCount: words.length,
+      isVague,
+      isSubstantial: words.length >= 25 && !isVague,
+    };
+  });
+
+  const wordCount = answerStats.reduce((total, answer) => total + answer.wordCount, 0);
+  const completedTurns = Math.min(userMessages.length, assistantMessages.length || userMessages.length);
+  const averageWords = userMessages.length > 0 ? wordCount / userMessages.length : 0;
+  const vagueAnswers = answerStats.filter((answer) => answer.isVague).length;
+  const substantialAnswers = answerStats.filter((answer) => answer.isSubstantial).length;
+  const vagueRatio = userMessages.length > 0 ? vagueAnswers / userMessages.length : 1;
+
+  let scoreCap = 78;
+  if (userMessages.length === 0) scoreCap = 15;
+  else if (userMessages.length < 2) scoreCap = 35;
+  else if (averageWords < 5) scoreCap = 28;
+  else if (averageWords < 12) scoreCap = 42;
+  else if (vagueRatio >= 0.5) scoreCap = 48;
+  else if (completedTurns < 3) scoreCap = 55;
+  else if (substantialAnswers >= 4 && averageWords >= 35) scoreCap = 88;
+
+  const evidenceScore = clampScore(
+    18 +
+      completedTurns * 4 +
+      Math.min(averageWords, 45) * 1.05 +
+      substantialAnswers * 5 -
+      vagueRatio * 24
+  );
+  const transcriptScore = Math.min(evidenceScore, scoreCap);
+
+  return {
+    userMessages,
+    completedTurns,
+    wordCount,
+    averageWords,
+    vagueAnswers,
+    substantialAnswers,
+    scoreCap,
+    transcriptScore,
+  };
+}
+
+function applyTranscriptCaps<T extends {
+  totalScore: number;
+  categoryScores: Feedback["categoryScores"];
+  strengths: string[];
+  areasForImprovement: string[];
+  finalAssessment: string;
+}>(evaluation: T, transcript: CreateFeedbackParams["transcript"]): T {
+  const analysis = analyzeTranscript(transcript);
+  const cappedTotal = clampScore(Math.min(evaluation.totalScore, analysis.scoreCap));
+  const categoryScores = evaluation.categoryScores.map((category) => ({
+    ...category,
+    score: clampScore(Math.min(category.score, analysis.scoreCap)),
+  }));
+
+  return {
+    ...evaluation,
+    totalScore: cappedTotal,
+    categoryScores,
+    areasForImprovement: [
+      ...evaluation.areasForImprovement,
+      ...(analysis.vagueAnswers > 0
+        ? ["Avoid very short or vague answers; include a concrete example, reasoning, and outcome."]
+        : []),
+    ].slice(0, 5),
+    finalAssessment:
+      cappedTotal < evaluation.totalScore
+        ? `${evaluation.finalAssessment} Score was capped because the saved transcript did not contain enough complete, specific candidate evidence for a higher rating.`
+        : evaluation.finalAssessment,
+  };
+}
+
+function buildFallbackFeedback(transcript: CreateFeedbackParams["transcript"]) {
+  const analysis = analyzeTranscript(transcript);
+  const baseScore = analysis.transcriptScore;
+  const shortAnswerNote =
+    analysis.averageWords < 12
+      ? " Most answers were short, so this area is scored conservatively."
+      : "";
+
+  return {
+    totalScore: baseScore,
+    categoryScores: [
+      {
+        name: "Communication Skills",
+        score: clampScore(baseScore + (analysis.averageWords >= 20 ? 4 : 0)),
+        comment:
+          analysis.userMessages.length > 0
+            ? `Communication was evaluated from ${analysis.userMessages.length} captured answer(s).${shortAnswerNote}`
+            : "No spoken or typed answer was captured, so communication could not be fully assessed.",
+      },
+      {
+        name: "Technical Knowledge",
+        score: clampScore(baseScore - 8),
+        comment:
+          "Technical score is low unless the transcript includes specific concepts, tradeoffs, tools, or implementation details.",
+      },
+      {
+        name: "Problem Solving",
+        score: clampScore(baseScore - 6),
+        comment:
+          "Problem solving needs clear reasoning, alternatives, and outcomes; short answers are not enough for a high score.",
+      },
+      {
+        name: "Cultural Fit",
+        score: clampScore(baseScore),
+        comment:
+          "Role fit was estimated only from engagement and the completeness of the captured answers.",
+      },
+      {
+        name: "Confidence and Clarity",
+        score: clampScore(baseScore - (analysis.vagueAnswers > 0 ? 5 : 0)),
+        comment:
+          "Confidence and clarity are reduced when answers are vague, incomplete, or too brief.",
+      },
+    ],
+    strengths:
+      analysis.substantialAnswers > 0
+        ? [
+            "At least one answer included enough detail to evaluate.",
+            "The transcript was saved for review and improvement.",
+          ]
+        : ["The interview transcript was saved for review."],
+    areasForImprovement: [
+      "Give complete examples with context, action, reasoning, and result.",
+      "Add role-specific technical details instead of one-line answers.",
+      "Answer follow-up questions directly before moving on.",
+    ],
+    finalAssessment:
+      `Fallback feedback was generated from the saved transcript because the AI scoring service could not complete the full evaluation. The score is intentionally conservative and capped at ${analysis.scoreCap}/100 based on answer depth and completeness.`,
+  };
+}
+
 export async function createFeedback(params: CreateFeedbackParams) {
   const { interviewId, userId, transcript, feedbackId } = params;
+  const db = getAdminDb();
 
   try {
-    const db = getAdminDb();
     const formattedTranscript = transcript
       .map(
         (sentence: { role: string; content: string }) =>
@@ -68,21 +218,28 @@ export async function createFeedback(params: CreateFeedbackParams) {
         ${formattedTranscript}
 
         Please score the candidate from 0 to 100 in the following areas. Do not add categories other than the ones provided:
+        Scoring must be strict:
+        - 90-100 only for exceptional, complete, specific answers with strong evidence across most questions.
+        - 70-89 for solid answers with some depth and examples.
+        - 45-69 for partial, generic, or inconsistent answers.
+        - 0-44 for very short, vague, skipped, incorrect, or mostly missing answers.
+        - If the candidate says they do not know, skips, gives one-word answers, or only gives fragments, score that category low.
         - **Communication Skills**: Clarity, articulation, structured responses.
         - **Technical Knowledge**: Understanding of key concepts for the role.
         - **Problem-Solving**: Ability to analyze problems and propose solutions.
         - **Cultural & Role Fit**: Alignment with company values and job role.
         - **Confidence & Clarity**: Confidence in responses, engagement, and clarity.
         `);
+    const scoredObject = applyTranscriptCaps(object, transcript);
 
     const feedback = {
       interviewId: interviewId,
       userId: userId,
-      totalScore: object.totalScore,
-      categoryScores: object.categoryScores,
-      strengths: object.strengths,
-      areasForImprovement: object.areasForImprovement,
-      finalAssessment: object.finalAssessment,
+      totalScore: scoredObject.totalScore,
+      categoryScores: scoredObject.categoryScores,
+      strengths: scoredObject.strengths,
+      areasForImprovement: scoredObject.areasForImprovement,
+      finalAssessment: scoredObject.finalAssessment,
       createdAt: new Date().toISOString(),
     };
 
@@ -98,8 +255,32 @@ export async function createFeedback(params: CreateFeedbackParams) {
 
     return { success: true, feedbackId: feedbackRef.id };
   } catch (error) {
-    console.error("Error saving feedback:", error);
-    return { success: false };
+    console.error("Error generating feedback, saving fallback feedback:", error);
+
+    try {
+      const fallbackObject = buildFallbackFeedback(transcript);
+      const fallbackFeedback = {
+        interviewId,
+        userId,
+        totalScore: fallbackObject.totalScore,
+        categoryScores: fallbackObject.categoryScores,
+        strengths: fallbackObject.strengths,
+        areasForImprovement: fallbackObject.areasForImprovement,
+        finalAssessment: fallbackObject.finalAssessment,
+        createdAt: new Date().toISOString(),
+      };
+
+      const feedbackRef = feedbackId
+        ? db.collection("feedback").doc(feedbackId)
+        : db.collection("feedback").doc();
+
+      await feedbackRef.set(fallbackFeedback);
+
+      return { success: true, feedbackId: feedbackRef.id, fallback: true };
+    } catch (fallbackError) {
+      console.error("Error saving fallback feedback:", fallbackError);
+      return { success: false };
+    }
   }
 }
 
