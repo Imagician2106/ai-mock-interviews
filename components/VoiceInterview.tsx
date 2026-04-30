@@ -4,7 +4,7 @@ import Image from "next/image";
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { Mic, PauseCircle, Play, RotateCcw, Send } from "lucide-react";
+import { Keyboard, Mic, PauseCircle, Play, RotateCcw } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { createFeedback } from "@/lib/actions/general.action";
@@ -55,28 +55,26 @@ interface SpeechRecognitionWindow extends Window {
 
 async function requestMicrophoneAccess() {
   if (!navigator.mediaDevices?.getUserMedia) {
-    toast.error("This browser cannot request microphone access. Switching to typed answers.");
-    return false;
+    return {
+      granted: false,
+      message: "This browser cannot request microphone access. You can continue with typed answers.",
+    };
   }
 
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     stream.getTracks().forEach((track) => track.stop());
-    return true;
+    return { granted: true, message: "" };
   } catch (error) {
     console.error("Microphone permission error:", error);
-    toast.error("Microphone access is blocked. You can continue with typed answers.");
-    return false;
-  }
-}
+    const name = error instanceof DOMException ? error.name : "";
+    const message =
+      name === "NotAllowedError"
+        ? "Microphone is blocked by the browser or operating system. Allow microphone access for this site, then try again."
+        : "Microphone is unavailable right now. You can continue with typed answers.";
 
-async function requestMicrophoneAccessWithTimeout(timeoutMs = 1200) {
-  return Promise.race([
-    requestMicrophoneAccess(),
-    new Promise<boolean>((resolve) => {
-      window.setTimeout(() => resolve(false), timeoutMs);
-    }),
-  ]);
+    return { granted: false, message };
+  }
 }
 
 const VoiceInterview = ({
@@ -102,6 +100,7 @@ const VoiceInterview = ({
   const [isStarted, setIsStarted] = useState(false);
   const [liveTranscript, setLiveTranscript] = useState("");
   const [isTextFallback, setIsTextFallback] = useState(false);
+  const [micMessage, setMicMessage] = useState("");
   const [typedAnswer, setTypedAnswer] = useState("");
 
   const recognitionRef = useRef<SpeechRecognition | null>(null);
@@ -399,6 +398,7 @@ const VoiceInterview = ({
     if (isStarted) return;
 
     setIsStarted(true);
+    setMicMessage("");
 
     const greeting = `Hello ${userName}! Thank you for joining this interview today. I'll be asking you a series of questions to learn about your experience and skills. Let's get started. ${questions?.[0] || "Tell me about yourself."}`;
 
@@ -410,17 +410,37 @@ const VoiceInterview = ({
     setCurrentQuestionIndex(1);
     setStatus("speaking");
 
+    const micAccess = await requestMicrophoneAccess();
     const speechPromise = speak(greeting);
-    const hasMicAccess = await requestMicrophoneAccessWithTimeout();
-    shouldListenRef.current = hasMicAccess;
-    isTextFallbackRef.current = !hasMicAccess;
-    setIsTextFallback(!hasMicAccess);
+    shouldListenRef.current = micAccess.granted;
+    isTextFallbackRef.current = !micAccess.granted;
+    setIsTextFallback(!micAccess.granted);
 
-    if (hasMicAccess) {
+    if (micAccess.granted) {
       await speechPromise;
       startListening();
     } else {
+      setMicMessage(micAccess.message);
+      toast.error(micAccess.message);
       setStatus("listening");
+    }
+  };
+
+  const handleRetryMicrophone = async () => {
+    if (!isStarted || status === "thinking" || status === "speaking") return;
+
+    setMicMessage("");
+    const micAccess = await requestMicrophoneAccess();
+    shouldListenRef.current = micAccess.granted;
+    isTextFallbackRef.current = !micAccess.granted;
+    setIsTextFallback(!micAccess.granted);
+
+    if (micAccess.granted) {
+      setStatus("listening");
+      startListening();
+    } else {
+      setMicMessage(micAccess.message);
+      toast.error(micAccess.message);
     }
   };
 
@@ -543,6 +563,15 @@ const VoiceInterview = ({
 
       {isTextFallback && isStarted && status !== "finished" && (
         <div className="text-answer-box">
+          {micMessage && (
+            <div className="mic-help">
+              <p>{micMessage}</p>
+              <button type="button" onClick={handleRetryMicrophone}>
+                <Mic className="size-4" />
+                Try microphone again
+              </button>
+            </div>
+          )}
           <textarea
             className="text-answer-input"
             value={typedAnswer}
@@ -556,7 +585,7 @@ const VoiceInterview = ({
             onClick={handleTypedSubmit}
             disabled={!typedAnswer.trim() || status === "thinking" || status === "speaking"}
           >
-            <Send className="size-4" />
+            <Keyboard className="size-4" />
             Send Answer
           </button>
         </div>

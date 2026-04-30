@@ -18,7 +18,7 @@ import { Form } from "@/components/ui/form";
 import { Button } from "@/components/ui/button";
 import { ArrowRight, LockKeyhole, Sparkles } from "lucide-react";
 
-import { signIn, signUp } from "@/lib/actions/auth.action";
+import { signUp } from "@/lib/actions/auth.action";
 import FormField from "./FormField";
 
 const authFormSchema = (type: FormType) => {
@@ -82,12 +82,15 @@ const AuthForm = ({ type }: { type: FormType }) => {
           return;
         }
 
-        const result = await signIn({
-          email,
-          idToken,
+        const response = await fetch("/api/auth/session", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "same-origin",
+          body: JSON.stringify({ idToken }),
         });
+        const result = await response.json();
 
-        if (!result?.success) {
+        if (!response.ok || !result?.success) {
           toast.error(result?.message || "Failed to sign in. Please try again.");
           return;
         }

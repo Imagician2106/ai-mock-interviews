@@ -1221,6 +1221,37 @@
   gap: 10px;
 }
 
+.mic-help {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(247, 83, 83, 0.08);
+  border: 1px solid rgba(247, 83, 83, 0.22);
+}
+
+.mic-help p {
+  color: #ffd6d6;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.mic-help button {
+  width: fit-content;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 0 12px;
+  border-radius: 999px;
+  color: #061018;
+  background: linear-gradient(135deg, #cac5fe, #72e3c6);
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
 .text-answer-input {
   min-height: 92px;
   width: 100%;
